@@ -23,6 +23,8 @@ const SDL_Color COLOR_BTN = {255, 255, 255, 255};
 const SDL_Color COLOR_SEL = {150, 150, 255, 255};
 const SDL_Color COLOR_TXT = {0, 0, 0, 255};
 
+int selected_index = 0;
+
 struct Button {
     SDL_Rect rect;
     std::string label;
@@ -81,20 +83,25 @@ void draw_buttons(SDL_Renderer* renderer, TTF_Font* font, int selected_index) {
 
 void load_menu(const std::string& menu_path, int restore_index = 0) {
     buttons.clear();
+    
+    // Make a local copy to avoid any reference issues
+    std::string safe_menu_path = menu_path;
+    
+    std::cout << safe_menu_path << "\n";
 
-    if (!fs::exists(menu_path) || !fs::is_directory(menu_path)) {
-        std::cout << "Menu path not found: " << menu_path << "\n";
+    if (!fs::exists(safe_menu_path) || !fs::is_directory(safe_menu_path)) {
+        std::cout << "Menu path not found: " << safe_menu_path << "\n";
         return;
     }
 
-    current_menu = menu_path;
+    current_menu = safe_menu_path;
     int y = 0;
 
     std::vector<std::string> ordered_entries;
     std::vector<std::string> all_entries;
 
     // Read .config for order if it exists
-    std::string config_path = menu_path + "/.config";
+    std::string config_path = safe_menu_path + "/.config";
     if (fs::exists(config_path) && fs::is_regular_file(config_path)) {
         std::ifstream config_file(config_path);
         std::string line;
@@ -106,7 +113,7 @@ void load_menu(const std::string& menu_path, int restore_index = 0) {
     }
 
     // Collect all visible entries (skip those starting with '.')
-    for (const auto& entry : fs::directory_iterator(menu_path)) {
+    for (const auto& entry : fs::directory_iterator(safe_menu_path)) {
         std::string name = entry.path().filename().string();
         if (name.empty() || name[0] == '.') continue;
         all_entries.push_back(name);
@@ -127,15 +134,19 @@ void load_menu(const std::string& menu_path, int restore_index = 0) {
 
     // Create buttons in order
     for (const auto& name : ordered_entries) {
-        fs::path p = menu_path;
-        p /= name;
+        // Build the full path as a string directly
+        std::string full_path = safe_menu_path;
+        if (full_path.back() != '/') {
+            full_path += '/';
+        }
+        full_path += name;
 
         Button b;
         b.rect = {0, y, SCREEN_WIDTH, BUTTON_HEIGHT};
 
         // Detect if it's a label file
-        if (name.rfind(".label_", 0) == 0) {  // starts with ".label_"
-            std::ifstream label_file(p);
+        if (name.rfind("label_", 0) == 0) {  // starts with "label_"
+            std::ifstream label_file(full_path);
             std::string label_text;
             std::getline(label_file, label_text);
             b.label = label_text.empty() ? "(empty)" : label_text;
@@ -144,15 +155,19 @@ void load_menu(const std::string& menu_path, int restore_index = 0) {
         else {
             b.label = name;
 
-            if (fs::is_directory(p)) {
-                b.target = p.string();  // submenu
+            if (fs::is_directory(full_path)) {
+                b.target = full_path;  // submenu path as string
             } else {
-                b.target = "__LAUNCH__" + p.string();  // launchable
+                b.target = "__LAUNCH__" + full_path;  // launchable path as string
             }
         }
 
         buttons.push_back(b);
         y += BUTTON_HEIGHT;
+    }
+
+    if (buttons.empty()) {
+        std::cout << "No entries found in directory\n";
     }
 }
 
@@ -165,6 +180,18 @@ void check_long_presses() {
             if (held >= LONG_PRESS_THRESHOLD) {
                 state.long_triggered = true;
                 std::cout << "[" << SDL_GetKeyName(key) << "] LONG press trigger\n";
+                switch(key) {
+                    case SDLK_w: {
+                        // clear menu history
+                        while (!menu_history.empty()) {
+                            menu_history.pop();
+                        }
+
+                        load_menu("menus/main_menu"); // go back to main menu when menu button is held
+                        selected_index = 0;
+                        break;
+                    }
+                }
             }
         }
     }
@@ -196,8 +223,6 @@ int main(int argc, char* argv[]) {
         SDL_Quit();
         return 1;
     }
-
-    int selected_index = 0;
 
     load_menu(current_menu);
 
@@ -234,19 +259,27 @@ int main(int argc, char* argv[]) {
                 if (!is_long) {
                     switch (key) {
                         case SDLK_s: {
+                            if (selected_index < 0 || selected_index >= (int)buttons.size()) {
+                                std::cout << "Invalid selected_index: " << selected_index << "\n";
+                                break;
+                            }
+                            
                             const auto& btn = buttons[selected_index];
                             std::cout << "[S] short press: " << btn.label << "\n";
 
                             if (btn.target.empty()) {
-                                // label only, no action
+                                std::cout << "Target is empty, no action\n";
                             } else if (btn.target.compare(0, 10, "__LAUNCH__") == 0) {
                                 std::string executable = btn.target.substr(10);
                                 std::cout << "Launching: " << executable << "\n";
                                 int ret = std::system(executable.c_str());
                                 std::cout << "Exited with code: " << ret << "\n";
                             } else {
+                                std::cout << "Navigating to submenu: " << btn.target << "\n";
+                                // Make a copy of the target string to avoid reference issues
+                                std::string target_copy = btn.target;
                                 menu_history.push({ current_menu, selected_index });
-                                load_menu(btn.target);
+                                load_menu(target_copy);
                                 selected_index = 0;
                             }
                             break;
